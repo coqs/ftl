@@ -1,0 +1,319 @@
+# your comments are still here
+# Turn() - for turning a specific angle, can be used for zigzag lines or 90-degree turns
+# lfStopBlue() - stops once either of the color sensors is blue
+# lfDistance() - line follows for a distance
+# lfwaitturnLR90 - keeps following line until left or right line detect then aligns (turns 90 degrees) to that line (only use for left or right lanes/lines)
+# lfwaitturnLR45 - same as above but turns 45 degrees instead, good for zigzags!!!
+#
+
+from pybricks.hubs import PrimeHub
+from pybricks.pupdevices import Motor, ColorSensor, UltrasonicSensor, ForceSensor
+from pybricks.parameters import Button, Color, Direction, Port, Side, Stop
+from pybricks.robotics import DriveBase
+from pybricks.tools import wait, StopWatch
+
+hub = PrimeHub()
+
+# motors and sensors
+leftMtr = Motor(port=Port.F, positive_direction=Direction.COUNTERCLOCKWISE)
+rightMtr = Motor(port=Port.C, positive_direction=Direction.CLOCKWISE)
+leftSnsr = ColorSensor(Port.D)
+rightSnsr = ColorSensor(Port.A)
+distanceSensor = UltrasonicSensor(port=Port.B)
+
+# pid gains - tune these for your robot
+kp = 1.3
+ki = 0.005 # originally 0.02
+kd = 1.77
+gyro_kp = 1 # for the gyro straight function
+
+# pid state variables
+integral = 0
+last_error = 0
+lr = None
+
+distancestuff = 50 
+wheelDiameter = 56
+
+dbRobot = DriveBase(left_motor=leftMtr, right_motor=rightMtr, wheel_diameter=wheelDiameter, axle_track=119.5)
+
+# --- core pid and movement logic ---
+
+def reset_pid():
+    # gotta reset the pid brain before each new move
+    global integral, last_error
+    integral = 0
+    last_error = 0
+
+def do_pid_step(speed):
+    # this is the main pid calculation
+    global integral, last_error
+    error = leftSnsr.reflection() - rightSnsr.reflection()
+    integral += error
+    # this stops the integral from getting too huge if the robot gets lost
+    if abs(integral) > 1000:
+        if integral > 0:
+            integral = 1000
+        else:
+            integral = -1000
+    derivative = error - last_error
+    turn_rate = (kp * error) + (ki * integral) + (kd * derivative)
+    dbRobot.drive(speed, turn_rate)
+    last_error = error
+
+def go_straight_gyro(distance_mm: float, speed: int):
+    # this is just for moving straight accurately, used by the spin turn now
+    dbRobot.reset()
+    hub.imu.reset_heading(0)
+    while dbRobot.distance() < distance_mm:
+        correction = hub.imu.heading() * gyro_kp
+        dbRobot.drive(speed, -correction)
+    dbRobot.stop()
+
+def Turn(angle: int, speed: int, pivot: bool = False, adjust_on_line: bool = True):
+
+
+    dbRobot.stop()
+    wait(1)
+
+    direction = 1 if angle > 0 else -1
+
+    if not pivot:
+        # Move forward slightly to center robot on junction before turning
+        dbRobot.straight(distance=distancestuff, then=Stop.BRAKE, wait=True)
+        dbRobot.turn(angle)
+
+    else:
+        target = abs(angle)
+        base_speed = abs(speed)
+        while True:
+            current = abs(hub.imu.heading())
+            remaining = target - current
+
+            # Slow down as we get close to the target angle
+            if remaining < 1:
+                cur_speed = base_speed * 1
+            elif remaining < 15:
+                cur_speed = base_speed * 1.2
+            else:
+                cur_speed = base_speed
+
+            # Run motors depending on pivot direction
+            if direction > 0:  # Right pivot
+                rightMtr.hold()
+                leftMtr.run(-cur_speed)
+            else:               # Left pivot
+                leftMtr.hold()
+                rightMtr.run(cur_speed)
+
+            if current >= target:
+                break
+            wait(1)
+
+        leftMtr.hold()
+        rightMtr.hold()
+
+    dbRobot.stop()
+    wait(1)
+
+    # --- Optional final line alignment ---
+    if adjust_on_line:
+        reset_pid()
+        timer = StopWatch()
+        while timer.time() < 160:  # for about 1 second
+            # keep following until one sensor sees black or white properly
+            if leftSnsr.color() == Color.BLACK or rightSnsr.color() == Color.BLACK:
+                break
+            do_pid_step(speed * 0.81)
+        dbRobot.stop()
+
+
+
+# --- your functions now clean and using the right logic ---
+
+def lfStopBlue(speed: int) -> None:
+    reset_pid()
+    while leftSnsr.color() != Color.BLUE and rightSnsr.color() != Color.BLUE:
+        do_pid_step(speed)
+    # stops exactly on the blue line now, no extra movement
+    dbRobot.stop()
+
+def lfDistance(speed: int, distance: float) -> None:
+    reset_pid()
+    dbRobot.reset()
+    target_mm = distance * 10
+    while dbRobot.distance() < target_mm:
+        do_pid_step(speed)
+    dbRobot.stop()
+
+
+def lfWaitTurnLR90(speed: int) -> None:
+    reset_pid()
+    dbRobot.reset()
+    while dbRobot.distance() < 20:
+        do_pid_step(speed)
+
+    while leftSnsr.color() != Color.BLUE and rightSnsr.color() != Color.BLUE:
+        do_pid_step(speed)
+    dbRobot.stop()
+    
+    if leftSnsr.color() == Color.BLUE:
+        lr = "L"
+    else:
+        lr = "R"
+    
+    # now we just call the turn function it handles the rest
+    if lr == "L":
+        Turn(angle=-90, speed=speed, pivot=True)
+    else:
+        Turn(angle=90, speed=speed, pivot=True)
+
+def lfWaitTurnLR45(speed: int) -> None:
+    reset_pid()
+    dbRobot.reset()
+    while dbRobot.distance() < 20:
+        do_pid_step(speed)
+        
+    while leftSnsr.color() != Color.BLUE and rightSnsr.color() != Color.BLUE:
+        do_pid_step(speed)
+    dbRobot.stop()
+    
+    if leftSnsr.color() == Color.BLUE:
+        lr = "L"
+    else:
+        lr = "R"
+
+    if lr == "L":
+        Turn(angle=-45, speed=speed, pivot=True)
+    else:
+        Turn(angle=45, speed=speed, pivot=True)
+        
+def lfWaitBlueLine(speed: int, startcm: float, stopCondition: str) -> None:
+    lfDistance(speed=speed, distance=startcm)
+    
+    reset_pid()
+    stop = None
+    while stop != stopCondition:
+        do_pid_step(speed)
+        
+        is_left_blue = leftSnsr.color() == Color.BLUE
+        is_right_blue = rightSnsr.color() == Color.BLUE
+
+        if is_left_blue and is_right_blue:
+            stop = "B"
+        elif is_left_blue:
+            stop = "L"
+        elif is_right_blue:
+            stop = "R"
+
+    # stops exactly where it sees the line
+    dbRobot.stop()
+
+def lfStopBarrier(speed: int, barrierDistance: float) -> None:
+    reset_pid()
+    barrierDistanceMM = barrierDistance * 10
+    while distanceSensor.distance() > barrierDistanceMM:
+        do_pid_step(speed)
+    dbRobot.stop()
+
+def turnAroundBarrier(turnRorL: str, turnSpeed: int, angle: float, moveSpeed: int, moveDistance: float):
+    dbRobot.settings(straight_speed=moveSpeed)
+    if turnRorL == "R":
+        dbRobot.turn(angle= angle, then=Stop.HOLD, wait=True)
+        dbRobot.straight(moveDistance)
+        dbRobot.turn(angle= -angle + 40, then=Stop.HOLD, wait=True)
+        dbRobot.straight(29, then=Stop.HOLD, wait=True)
+        dbRobot.turn(angle= -angle, then=Stop.HOLD, wait=True)
+    elif turnRorL == "L":
+        dbRobot.turn(angle= -angle, then=Stop.HOLD, wait=True)
+        dbRobot.straight(moveDistance - 2)
+        dbRobot.turn(angle= angle + 40, then=Stop.HOLD, wait=True)
+        lfWaitBlueLine(speed=moveSpeed, startcm=0, stopCondition="R")
+        dbRobot.straight(29, then=Stop.HOLD, wait=True)
+        dbRobot.turn(angle= -angle, then=Stop.HOLD, wait=True)
+
+
+def pivotTurn(slowWheelSpeed: int, fastWheelSpeed: int, angle: float, endAlignCM: float) -> None:
+    hub.imu.reset_heading()
+
+    if angle > 0:
+        while hub.imu.heading() < angle:
+            leftMtr.run(speed=fastWheelSpeed)
+            rightMtr.run(speed=slowWheelSpeed)
+    elif angle < 0:
+        while abs(hub.imu.heading()) < abs(angle):
+            leftMtr.run(speed=slowWheelSpeed)
+            rightMtr.run(speed=fastWheelSpeed)
+
+    leftMtr.hold()
+    rightMtr.hold()
+    lfDistance(speed=slowWheelSpeed, distance=endAlignCM * 10)
+
+
+def turnAroundBarrierV3(
+    side: str,          # "L" or "R"
+    pivotSpeed: int,    # speed for pivot turns
+    moveSpeed: int,     # straight movement speed
+    firstAngle: float,  # first pivot angle (away from barrier)
+    straightCM: float,  # how far to move beside barrier
+    finalAngle: float,  # second pivot angle (back toward line)
+    alignCM: float      # distance to move forward to re-center on the line
+):
+
+    # Step 1: pivot away from barrier
+    if side == "L":
+        pivotTurn(slowWheelSpeed=0, fastWheelSpeed=pivotSpeed, angle=-firstAngle, endAlignCM=0)
+    else:
+        pivotTurn(slowWheelSpeed=0, fastWheelSpeed=pivotSpeed, angle=firstAngle, endAlignCM=0)
+
+    # Step 2: move forward alongside barrier
+    lfDistance(speed=moveSpeed, distance=straightCM)
+
+    # Step 3: pivot back toward line (opposite side)
+    if side == "L":
+        pivotTurn(slowWheelSpeed=0, fastWheelSpeed=pivotSpeed, angle=finalAngle, endAlignCM=0)
+    else:
+        pivotTurn(slowWheelSpeed=0, fastWheelSpeed=pivotSpeed, angle=-finalAngle, endAlignCM=0)
+
+    # Step 4: move until the opposite color sensor touches the line
+    reset_pid()
+    if side == "L":
+        while rightSnsr.color() != Color.BLUE:
+            dbRobot.drive(moveSpeed, 0)
+    else:
+        while leftSnsr.color() != Color.BLUE:
+            dbRobot.drive(moveSpeed, 0)
+    dbRobot.stop()
+
+    # Step 5: final small straight move to re-center perfectly
+    lfDistance(speed=moveSpeed, distance=alignCM)
+    dbRobot.stop()
+
+
+
+def mainFunc() -> None:
+        
+    lfWaitBlueLine(speed=350, startcm=0, stopCondition="L")
+    Turn(angle=-90, speed=300)
+    lfWaitBlueLine(speed=200, startcm=0, stopCondition="L") # low speed because of arcs/curves (adjust until perfect)
+    Turn(angle=-90, speed=300)
+    lfWaitBlueLine(speed=350, startcm=0, stopCondition="B")
+    Turn(angle=-90, speed=300)
+    lfWaitBlueLine(speed=350, startcm=0, stopCondition="R")
+    Turn(angle=90, speed=300)
+    lfWaitBlueLine(speed=350, startcm=0, stopCondition="L")
+    Turn(angle=-90, speed=300)
+    lfWaitBlueLine(speed=350, startcm=0, stopCondition="L")
+    Turn(angle=-90, speed=300)
+    lfWaitBlueLine(speed=350, startcm=0, stopCondition="L")
+    Turn(angle=-90, speed=300)
+    lfWaitBlueLine(speed=350, startcm=0, stopCondition="R")
+    Turn(angle=90, speed=300)
+    lfWaitBlueLine(speed=350, startcm=0, stopCondition="R")
+    Turn(angle=90, speed=300)
+    lfWaitBlueLine(speed=350, startcm=0, stopCondition="L")
+    Turn(angle=-90, speed=300)
+    lfWaitBlueLine(speed=350, startcm=0, stopCondition="B")
+
+
+mainFunc()
